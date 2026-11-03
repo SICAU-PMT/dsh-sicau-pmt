@@ -144,12 +144,19 @@ const catalogOf = (entries) => {
   return map;
 };
 
-test('网关目录里新增的模型会追加到路由里，并带上能力', () => {
-  const raw = route([{ id: 'DeepSeek-V4.1-Flash', reasoningEfforts: { high: 'high' }, contextWindow: 1000000, maxTokens: 128000 }]);
-  const catalog = catalogOf([{ id: 'Space-Bunny', name: 'Space-Bunny', context: 1000000, max_output: 128000 }]);
+test('网关目录里新增的模型会被纳入路由，并带上能力', () => {
+  const raw = route([{ id: 'GLM-5.3' }]);
+  const catalog = catalogOf([
+    { id: 'GLM-5.3' },
+    { id: 'Space-Bunny', name: 'Space-Bunny', context: 1000000, max_output: 128000 },
+  ]);
   const next = withDiscoveredModels(raw, OPTIONS, catalog);
   const models = next.providers['sicau-pmt'].models;
-  assert.equal(models.length, 2);
+  assert.deepEqual(
+    models.map((model) => model.id),
+    ['GLM-5.3', 'Space-Bunny'],
+  );
+  assert.equal(models[0], raw.providers['sicau-pmt'].models[0]);
   assert.deepEqual(models[1], {
     id: 'Space-Bunny',
     reasoningEfforts: { low: 'low', medium: 'medium', high: 'high', xhigh: 'xhigh', max: 'max' },
@@ -158,7 +165,7 @@ test('网关目录里新增的模型会追加到路由里，并带上能力', ()
   });
 });
 
-test('目录里的模型一个都不缺时不做改动', () => {
+test('模型与顺序都与目录一致时不做改动', () => {
   const raw = route([{ id: 'GLM-5.3' }]);
   assert.equal(withDiscoveredModels(raw, OPTIONS, catalogOf([{ id: 'GLM-5.3' }])), raw);
 });
@@ -169,11 +176,19 @@ test('目录为空或拉不到时不做改动，不能把模型列表清空', ()
   assert.equal(withDiscoveredModels(raw, OPTIONS, new Map()), raw);
 });
 
-test('只加不删：网关不再列出的模型保留在路由里', () => {
+test('网关不再提供的模型被移出路由，用户自己加的其他模型保留', () => {
   const raw = route([{ id: 'Hy3' }, { id: 'GLM-5.3' }]);
   const next = withDiscoveredModels(raw, OPTIONS, catalogOf([{ id: 'GLM-5.3' }]));
-  assert.equal(next, raw);
-  assert.equal(next.providers['sicau-pmt'].models[0].id, 'Hy3');
+  assert.deepEqual(
+    next.providers['sicau-pmt'].models.map((model) => model.id),
+    ['GLM-5.3'],
+  );
+});
+
+test('目录拉不到时一个模型都不移除', () => {
+  const raw = route([{ id: 'Hy3' }, { id: 'GLM-5.3' }]);
+  assert.equal(withDiscoveredModels(raw, OPTIONS, undefined), raw);
+  assert.equal(withDiscoveredModels(raw, OPTIONS, new Map()), raw);
 });
 
 test('无关路由不会被追加模型', () => {
@@ -260,4 +275,33 @@ test('free 后缀可以叠在 preview 这类已有条目上', () => {
     high: 'high',
     max: 'max',
   });
+});
+
+// ---------------- 按目录对齐：清掉上游已下架的模型 ----------------
+
+test('用户在某模型上写过的字段在重排后不丢', () => {
+  const raw = route([
+    { id: 'Hy3', name: 'Hy3', reasoningEfforts: { high: 'high' } },
+    { id: 'GLM-5.3', name: '我的GLM', contextWindow: 64000 },
+  ]);
+  const catalog = catalogOf([{ id: 'GLM-5.3' }, { id: 'Space-Bunny' }]);
+  const next = withDiscoveredModels(raw, OPTIONS, catalog);
+  const models = next.providers['sicau-pmt'].models;
+  assert.deepEqual(
+    models.map((model) => model.id),
+    ['GLM-5.3', 'Space-Bunny'],
+  );
+  // 用户写的 name、contextWindow 原样保留，Hy3 已被下架所以消失。
+  assert.equal(models[0].name, '我的GLM');
+  assert.equal(models[0].contextWindow, 64000);
+});
+
+test('按 name 匹配也能对上，不会因为显示名与 id 不同就当成新模型', () => {
+  const raw = route([{ id: 'xiaomimimo', name: 'Xiaomi MiMo-V2.6-Pro', maxTokens: 128000 }]);
+  const catalog = catalogOf([{ id: 'Xiaomi MiMo-V2.6-Pro', name: 'Xiaomi MiMo-V2.6-Pro' }]);
+  const next = withDiscoveredModels(raw, OPTIONS, catalog);
+  const models = next.providers['sicau-pmt'].models;
+  assert.equal(models.length, 1);
+  assert.equal(models[0], raw.providers['sicau-pmt'].models[0]);
+  assert.equal(models[0].maxTokens, 128000);
 });
