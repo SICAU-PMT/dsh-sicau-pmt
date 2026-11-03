@@ -1,0 +1,263 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import { withCapabilities, withDefaultEffort, withDiscoveredModels } from '../lib/sync.js';
+
+const OPTIONS = { routes: ['sicau-pmt'], baseURLs: ['https://api.hhy.homes/v1'], defaultEffort: 'high' };
+
+const route = (models, extra = {}) => ({
+  providers: {
+    'sicau-pmt': {
+      displayName: 'api.hhy.homes',
+      api: 'openai-completions',
+      baseURL: 'https://api.hhy.homes/v1',
+      models,
+      ...extra,
+    },
+  },
+});
+
+test('为已有模型的 DeepSeek 补思考档位与长度上限', () => {
+  const raw = route([{ id: 'DeepSeek-V4.1-Flash', name: 'deepseek-chat' }]);
+  const next = withCapabilities(raw, OPTIONS);
+  assert.deepEqual(next.providers['sicau-pmt'].models[0], {
+    id: 'DeepSeek-V4.1-Flash',
+    name: 'deepseek-chat',
+    reasoningEfforts: { off: 'none', low: 'low', high: 'high', max: 'max' },
+    contextWindow: 1000000,
+    maxTokens: 128000,
+  });
+});
+
+test('关不掉思考的模型不给 off 档', () => {
+  const next = withCapabilities(route([{ id: 'GLM-5.3-Flash' }]), OPTIONS);
+  assert.deepEqual(next.providers['sicau-pmt'].models[0].reasoningEfforts, {
+    low: 'low',
+    high: 'high',
+    max: 'max',
+  });
+});
+
+test('用户写过的档位、上下文、输出上限一律保留', () => {
+  const model = {
+    id: 'MiniMax-M3.1-Flash',
+    reasoningEfforts: { off: 'none', high: 'high' },
+    contextWindow: 65536,
+    maxTokens: 4096,
+  };
+  const raw = route([model]);
+  const next = withCapabilities(raw, OPTIONS);
+  // 引用不变＝一个字段都不缺，调用方据此跳过写盘。
+  assert.equal(next, raw);
+  assert.deepEqual(next.providers['sicau-pmt'].models[0], model);
+});
+
+test('reasoningEfforts: false 是用户明确声明不思考，不覆盖', () => {
+  const model = { id: 'DeepSeek-V4.1-Flash', reasoningEfforts: false };
+  const next = withCapabilities(route([model]), OPTIONS);
+  assert.equal(next.providers['sicau-pmt'].models[0].reasoningEfforts, false);
+});
+
+test('表里没有的模型给保守三档，长度上限留空', () => {
+  const next = withCapabilities(route([{ id: 'some-new-model' }]), OPTIONS);
+  assert.deepEqual(next.providers['sicau-pmt'].models[0], {
+    id: 'some-new-model',
+    reasoningEfforts: { off: 'none', low: 'low', medium: 'medium', high: 'high' },
+  });
+});
+
+test('显示名与上游 key 都能命中同一份能力', () => {
+  const byDisplay = withCapabilities(route([{ id: 'DeepSeek-V4.1-Flash' }]), OPTIONS);
+  const byKey = withCapabilities(route([{ id: 'deepseek-v4.1-flash' }]), OPTIONS);
+  assert.deepEqual(byDisplay.providers['sicau-pmt'].models[0].reasoningEfforts, byKey.providers['sicau-pmt'].models[0].reasoningEfforts);
+});
+
+test('已补全的配置再跑一次不做任何改动', () => {
+  const once = withCapabilities(route([{ id: 'Hy3' }, { id: 'GLM-5.3' }]), OPTIONS);
+  const twice = withCapabilities(structuredClone(once), OPTIONS);
+  assert.deepEqual(twice, once);
+  assert.equal(withCapabilities(once, OPTIONS), once);
+});
+
+test('按 baseURL 认路由，路由名不同也补', () => {
+  const raw = { providers: { 'my-relay': { baseURL: 'https://api.hhy.homes/v1/', models: [{ id: 'Hy3' }] } } };
+  const next = withCapabilities(raw, OPTIONS);
+  assert.deepEqual(next.providers['my-relay'].models[0].reasoningEfforts, { low: 'low', high: 'high' });
+});
+
+test('无关路由原样返回，不误伤别家模型', () => {
+  const raw = {
+    providers: {
+      'sicau-pmt': { baseURL: 'https://api.hhy.homes/v1', models: [{ id: 'Hy3' }] },
+      openai: { baseURL: 'https://api.openai.com/v1', models: [{ id: 'gpt-5' }] },
+    },
+  };
+  const next = withCapabilities(raw, OPTIONS);
+  assert.equal(next.providers.openai, raw.providers.openai);
+});
+
+test('没有 providers 或没有模型时原样返回', () => {
+  assert.deepEqual(withCapabilities({}, OPTIONS), {});
+  assert.deepEqual(withCapabilities(null, OPTIONS), null);
+  const empty = route([]);
+  assert.equal(withCapabilities(empty, OPTIONS), empty);
+});
+
+// ---------------- 默认档位 ----------------
+
+const providers = (models) => ({ 'sicau-pmt': { baseURL: 'https://api.hhy.homes/v1', models } });
+
+test('默认模型没写档位时补一个该模型支持的档', () => {
+  const agent = { provider: 'sicau-pmt', model: 'DeepSeek-V4.1-Flash' };
+  const next = withDefaultEffort(agent, providers([{ id: 'DeepSeek-V4.1-Flash', reasoningEfforts: { off: 'none', low: 'low', high: 'high', max: 'max' } }]), OPTIONS);
+  assert.deepEqual(next, { provider: 'sicau-pmt', model: 'DeepSeek-V4.1-Flash', reasoningEffort: 'high' });
+});
+
+test('用户写过的档位不动', () => {
+  const agent = { provider: 'sicau-pmt', model: 'DeepSeek-V4.1-Flash', reasoningEffort: 'low' };
+  const models = [{ id: 'DeepSeek-V4.1-Flash', reasoningEfforts: { low: 'low', high: 'high' } }];
+  const next = withDefaultEffort(agent, providers(models), OPTIONS);
+  assert.equal(next, agent);
+});
+
+test('首选档不支持时降级到最近的可选档', () => {
+  const agent = { provider: 'sicau-pmt', model: 'Hy3' };
+  const next = withDefaultEffort(agent, providers([{ id: 'Hy3', reasoningEfforts: { low: 'low' } }]), OPTIONS);
+  assert.equal(next.reasoningEffort, 'low');
+});
+
+test('模型声明不思考时不给档位', () => {
+  const agent = { provider: 'sicau-pmt', model: 'plain' };
+  assert.equal(withDefaultEffort(agent, providers([{ id: 'plain', reasoningEfforts: false }]), OPTIONS), agent);
+});
+
+test('默认模型不在中转路由上时什么都不做', () => {
+  const agent = { provider: 'deepseek-official', model: 'deepseek-chat' };
+  const next = withDefaultEffort(agent, providers([{ id: 'deepseek-chat', reasoningEfforts: { low: 'low' } }]), OPTIONS);
+  assert.equal(next, agent);
+});
+
+// ---------------- 从网关目录追加新模型 ----------------
+
+const catalogOf = (entries) => {
+  const map = new Map();
+  for (const entry of entries) map.set(entry.id.toLowerCase().replace(/[\s\-_.:/]/g, ''), entry);
+  return map;
+};
+
+test('网关目录里新增的模型会追加到路由里，并带上能力', () => {
+  const raw = route([{ id: 'DeepSeek-V4.1-Flash', reasoningEfforts: { high: 'high' }, contextWindow: 1000000, maxTokens: 128000 }]);
+  const catalog = catalogOf([{ id: 'Space-Bunny', name: 'Space-Bunny', context: 1000000, max_output: 128000 }]);
+  const next = withDiscoveredModels(raw, OPTIONS, catalog);
+  const models = next.providers['sicau-pmt'].models;
+  assert.equal(models.length, 2);
+  assert.deepEqual(models[1], {
+    id: 'Space-Bunny',
+    reasoningEfforts: { low: 'low', medium: 'medium', high: 'high', xhigh: 'xhigh', max: 'max' },
+    contextWindow: 1000000,
+    maxTokens: 128000,
+  });
+});
+
+test('目录里的模型一个都不缺时不做改动', () => {
+  const raw = route([{ id: 'GLM-5.3' }]);
+  assert.equal(withDiscoveredModels(raw, OPTIONS, catalogOf([{ id: 'GLM-5.3' }])), raw);
+});
+
+test('目录为空或拉不到时不做改动，不能把模型列表清空', () => {
+  const raw = route([{ id: 'GLM-5.3' }]);
+  assert.equal(withDiscoveredModels(raw, OPTIONS, undefined), raw);
+  assert.equal(withDiscoveredModels(raw, OPTIONS, new Map()), raw);
+});
+
+test('只加不删：网关不再列出的模型保留在路由里', () => {
+  const raw = route([{ id: 'Hy3' }, { id: 'GLM-5.3' }]);
+  const next = withDiscoveredModels(raw, OPTIONS, catalogOf([{ id: 'GLM-5.3' }]));
+  assert.equal(next, raw);
+  assert.equal(next.providers['sicau-pmt'].models[0].id, 'Hy3');
+});
+
+test('无关路由不会被追加模型', () => {
+  const raw = {
+    providers: {
+      'sicau-pmt': { baseURL: 'https://api.hhy.homes/v1', models: [{ id: 'GLM-5.3' }] },
+      openai: { baseURL: 'https://api.openai.com/v1', models: [{ id: 'gpt-5' }] },
+    },
+  };
+  const next = withDiscoveredModels(raw, OPTIONS, catalogOf([{ id: 'GLM-5.3' }, { id: 'Space-Bunny' }]));
+  assert.equal(next.providers.openai, raw.providers.openai);
+  assert.equal(next.providers['sicau-pmt'].models.length, 2);
+});
+
+// ---------------- 长度上限优先取网关目录 ----------------
+
+test('上下文窗口与输出上限优先用网关目录给的值', () => {
+  const raw = route([{ id: 'GLM-5.3-Flash' }]);
+  const catalog = catalogOf([{ id: 'GLM-5.3-Flash', context: 999000, max_output: 12345 }]);
+  const next = withCapabilities(raw, OPTIONS, catalog);
+  assert.equal(next.providers['sicau-pmt'].models[0].contextWindow, 999000);
+  assert.equal(next.providers['sicau-pmt'].models[0].maxTokens, 12345);
+});
+
+test('目录里缺字段时退回能力表的数值', () => {
+  const raw = route([{ id: 'GLM-5.3-Flash' }]);
+  const next = withCapabilities(raw, OPTIONS, catalogOf([{ id: 'GLM-5.3-Flash' }]));
+  assert.equal(next.providers['sicau-pmt'].models[0].contextWindow, 1000000);
+  assert.equal(next.providers['sicau-pmt'].models[0].maxTokens, 131072);
+});
+
+test('网关给的非法长度不写进配置', () => {
+  const raw = route([{ id: 'Hy3' }]);
+  const next = withCapabilities(raw, OPTIONS, catalogOf([{ id: 'Hy3', context: 0, max_output: -5 }]));
+  assert.equal(next.providers['sicau-pmt'].models[0].contextWindow, 192000);
+  assert.equal(next.providers['sicau-pmt'].models[0].maxTokens, 64000);
+});
+
+// ---------------- 显示名与上游 key 的别名 ----------------
+
+test('中转按显示名发布、能力表按上游 key 记录时也能命中', () => {
+  // 网关发布的 id 是 Xiaomi MiMo-V2.6-Pro，能力表里的写法是 mimo-v2.6-pro。
+  const next = withCapabilities(route([{ id: 'Xiaomi MiMo-V2.6-Pro' }]), OPTIONS);
+  const model = next.providers['sicau-pmt'].models[0];
+  assert.deepEqual(model.reasoningEfforts, { low: 'low', medium: 'medium', high: 'high' });
+  assert.equal(model.contextWindow, 1000000);
+  assert.equal(model.maxTokens, 128000);
+  // 关不掉思考的模型不该出现 off 档。
+  assert.equal(model.reasoningEfforts.off, undefined);
+});
+
+test('改名前的旧写法仍然认得', () => {
+  const next = withCapabilities(route([{ id: 'deepseek-flash' }]), OPTIONS);
+  assert.equal(next.providers['sicau-pmt'].models[0].maxTokens, 128000);
+  assert.equal(next.providers['sicau-pmt'].models[0].reasoningEfforts.off, 'none');
+});
+
+// ---------------- 带后缀发布的同款模型 ----------------
+
+test('网关给免费额度单开的 -free 变体沿用基础模型的能力', () => {
+  const next = withCapabilities(route([{ id: 'DeepSeek-V4.1-Flash-free' }]), OPTIONS);
+  const model = next.providers['sicau-pmt'].models[0];
+  assert.deepEqual(model.reasoningEfforts, { off: 'none', low: 'low', high: 'high', max: 'max' });
+  assert.equal(model.maxTokens, 128000);
+});
+
+test('别的后缀不猜，仍按自己的条目或兜底算', () => {
+  const unknown = withCapabilities(route([{ id: 'brand-new-free' }]), OPTIONS);
+  assert.deepEqual(unknown.providers['sicau-pmt'].models[0].reasoningEfforts, {
+    off: 'none',
+    low: 'low',
+    medium: 'medium',
+    high: 'high',
+  });
+  // preview 的模型自己在表里有条目时按自己的条目算。
+  const hy4 = withCapabilities(route([{ id: 'Hy4-preview' }]), OPTIONS);
+  assert.deepEqual(hy4.providers['sicau-pmt'].models[0].reasoningEfforts, { high: 'high' });
+});
+
+test('free 后缀可以叠在 preview 这类已有条目上', () => {
+  const next = withCapabilities(route([{ id: 'Kimi-K2.8-Preview-free' }]), OPTIONS);
+  assert.deepEqual(next.providers['sicau-pmt'].models[0].reasoningEfforts, {
+    low: 'low',
+    high: 'high',
+    max: 'max',
+  });
+});

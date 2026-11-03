@@ -1,0 +1,6 @@
+# Bundle patch: mount the sicau-pmt capability synchronizer as one extra row.
+# A new id is never shadowed by the user's profile patch, and this plugin never
+# declares the llm-pi-ai row itself — it edits that row through configEditor.
+- insert:
+    - id: sicau-pmt
+      name: 'dsh-sicau-pmt'

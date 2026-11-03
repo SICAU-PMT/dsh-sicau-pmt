@@ -1,0 +1,32 @@
+{
+  "name": "dsh-sicau-pmt",
+  "version": "0.2.0",
+  "description": "DSH bundle: syncs the sicau-pmt (oh-pmt-api) model catalog into a @deepseek-ai/dsh-llm-pi-ai route, with thinking-effort levels",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib/index.js",
+    "lib/sync.js",
+    "lib/catalog.js",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "license": "MIT",
+  "keywords": [
+    "dsh",
+    "dsh-bundle",
+    "deepseek-harness",
+    "sicau-pmt",
+    "oh-pmt-api",
+    "reasoning-effort"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}
