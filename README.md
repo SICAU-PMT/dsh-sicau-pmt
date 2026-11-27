@@ -11,7 +11,7 @@ DeepSeek Harness 的思考档位是**按路由声明的能力**，不是运行�
 
 - `@deepseek-ai/dsh-llm-pi-ai` 只把路由里每个模型显式写的 `reasoningEfforts` 交给界面；
 - 没写就等于「这个模型不支持思考」，选择器里一个档位都不出现；
-- 中转站（[oh-pmt-api](https://api.hhy.homes) 这类 OpenAI 兼容网关）的 `/v1/models` 只给 id、显示名、上下文长度、输出上限，没有任何思考能力字段；DSH 的模型发现类型也没有承载档位的字段，探到了也传不进选择器。
+- 中转站（[oh-pmt-api](https://api.pmtlab.cn) 这类 OpenAI 兼容网关）的 `/v1/models` 只给 id、显示名、上下文长度、输出上限，没有任何思考能力字段；DSH 的模型发现类型也没有承载档位的字段，探到了也传不进选择器。
 
 所以缺档位是客户端没声明，不是中转的问题：中转收到 `reasoning_effort` 会原样转发给上游。这个插件就在客户端把声明补齐。
 
@@ -19,8 +19,9 @@ DeepSeek Harness 的思考档位是**按路由声明的能力**，不是运行�
 
 ## 它做什么
 
-启动时同步一次，之后每隔 30 分钟再同步一次，结果都写进当前 profile 的 `cordis.patch.yml`：
+启动时同步一次，之后每隔 5 分钟再同步一次，结果都写进当前 profile 的 `cordis.patch.yml`：
 
+0. 自动识别老配置里的旧域名路由并平滑迁移到 `https://api.pmtlab.cn/v1`；同时给每个模型补上 `input`，声明它为多模态（`text` + `image`）：不写这个字段时 DSH 会把图片换成一段占位文字，模型根本看不到图。
 1. 拉一次中转的 `/v1/models`，按它对齐路由的模型列表：网关有而路由没有的补上，路由里有而网关已经不提供的移出。
 2. 给每个模型补 `reasoningEfforts`，以及缺失的 `contextWindow` 与 `maxTokens`。长度上限优先用网关给的 `context` / `max_output`，网关没给才用能力表（DSH 默认按 262144 上下文算，Hy3 这类只有 192k 的模型会被高估）。
 3. 如果默认模型正好在这条路由上、且没指定档位，补一个该模型支持得上的档（默认 `high`）。
@@ -54,9 +55,9 @@ node -e 'const f="package.json",p=require("./"+f);p.dsh.profile.bundles.push("ds
   name: dsh-sicau-pmt
   config:
     routes: [sicau-pmt]                      # 按路由名认
-    baseURLs: [https://api.hhy.homes/v1]     # 按 baseURL 认
+    baseURLs: [https://api.pmtlab.cn/v1]     # 按 baseURL 认
     defaultEffort: high                      # 默认模型补哪个档；false = 不补
-    refreshIntervalMs: 1800000               # 多久重新拉一次目录；0 = 只在启动时同步
+    refreshIntervalMs: 300000                # 多久重新拉一次目录；0 = 只在启动时同步
 ```
 
 只要路由名或 baseURL 命中一条，就会被补全。

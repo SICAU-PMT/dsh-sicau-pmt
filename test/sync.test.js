@@ -1,15 +1,15 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { withCapabilities, withDefaultEffort, withDiscoveredModels } from '../lib/sync.js';
+import { migrateBaseURL, withCapabilities, withDefaultEffort, withDiscoveredModels, withMigratedBaseURL } from '../lib/sync.js';
 
-const OPTIONS = { routes: ['sicau-pmt'], baseURLs: ['https://api.hhy.homes/v1'], defaultEffort: 'high' };
+const OPTIONS = { routes: ['sicau-pmt'], baseURLs: ['https://api.pmtlab.cn/v1'], defaultEffort: 'high' };
 
 const route = (models, extra = {}) => ({
   providers: {
     'sicau-pmt': {
-      displayName: 'api.hhy.homes',
+      displayName: 'api.pmtlab.cn',
       api: 'openai-completions',
-      baseURL: 'https://api.hhy.homes/v1',
+      baseURL: 'https://api.pmtlab.cn/v1',
       models,
       ...extra,
     },
@@ -25,6 +25,7 @@ test('为已有模型的 DeepSeek 补思考档位与长度上限', () => {
     reasoningEfforts: { off: 'none', low: 'low', high: 'high', max: 'max' },
     contextWindow: 1000000,
     maxTokens: 128000,
+    input: ['text', 'image'],
   });
 });
 
@@ -43,6 +44,7 @@ test('用户写过的档位、上下文、输出上限一律保留', () => {
     reasoningEfforts: { off: 'none', high: 'high' },
     contextWindow: 65536,
     maxTokens: 4096,
+    input: ['text'],
   };
   const raw = route([model]);
   const next = withCapabilities(raw, OPTIONS);
@@ -57,12 +59,19 @@ test('reasoningEfforts: false 是用户明确声明不思考，不覆盖', () =>
   assert.equal(next.providers['sicau-pmt'].models[0].reasoningEfforts, false);
 });
 
-test('表里没有的模型给保守三档，长度上限留空', () => {
+test('表里没有的模型给保守三档、长度上限留空、按纯文本声明', () => {
   const next = withCapabilities(route([{ id: 'some-new-model' }]), OPTIONS);
   assert.deepEqual(next.providers['sicau-pmt'].models[0], {
     id: 'some-new-model',
     reasoningEfforts: { off: 'none', low: 'low', medium: 'medium', high: 'high' },
+    input: ['text'],
   });
+});
+
+test('已知的多模态模型补上 image，用户自己写过的 input 不动', () => {
+  const next = withCapabilities(route([{ id: 'GLM-5.3-Flash' }, { id: 'MiniMax-M3.1-Flash', input: ['text'] }]), OPTIONS);
+  assert.deepEqual(next.providers['sicau-pmt'].models[0].input, ['text', 'image']);
+  assert.deepEqual(next.providers['sicau-pmt'].models[1].input, ['text']);
 });
 
 test('显示名与上游 key 都能命中同一份能力', () => {
@@ -79,7 +88,7 @@ test('已补全的配置再跑一次不做任何改动', () => {
 });
 
 test('按 baseURL 认路由，路由名不同也补', () => {
-  const raw = { providers: { 'my-relay': { baseURL: 'https://api.hhy.homes/v1/', models: [{ id: 'Hy3' }] } } };
+  const raw = { providers: { 'my-relay': { baseURL: 'https://api.pmtlab.cn/v1/', models: [{ id: 'Hy3' }] } } };
   const next = withCapabilities(raw, OPTIONS);
   assert.deepEqual(next.providers['my-relay'].models[0].reasoningEfforts, { low: 'low', high: 'high' });
 });
@@ -87,7 +96,7 @@ test('按 baseURL 认路由，路由名不同也补', () => {
 test('无关路由原样返回，不误伤别家模型', () => {
   const raw = {
     providers: {
-      'sicau-pmt': { baseURL: 'https://api.hhy.homes/v1', models: [{ id: 'Hy3' }] },
+      'sicau-pmt': { baseURL: 'https://api.pmtlab.cn/v1', models: [{ id: 'Hy3' }] },
       openai: { baseURL: 'https://api.openai.com/v1', models: [{ id: 'gpt-5' }] },
     },
   };
@@ -104,7 +113,7 @@ test('没有 providers 或没有模型时原样返回', () => {
 
 // ---------------- 默认档位 ----------------
 
-const providers = (models) => ({ 'sicau-pmt': { baseURL: 'https://api.hhy.homes/v1', models } });
+const providers = (models) => ({ 'sicau-pmt': { baseURL: 'https://api.pmtlab.cn/v1', models } });
 
 test('默认模型没写档位时补一个该模型支持的档', () => {
   const agent = { provider: 'sicau-pmt', model: 'DeepSeek-V4.1-Flash' };
@@ -162,6 +171,7 @@ test('网关目录里新增的模型会被纳入路由，并带上能力', () =>
     reasoningEfforts: { low: 'low', medium: 'medium', high: 'high', xhigh: 'xhigh', max: 'max' },
     contextWindow: 1000000,
     maxTokens: 128000,
+    input: ['text', 'image'],
   });
 });
 
@@ -194,7 +204,7 @@ test('目录拉不到时一个模型都不移除', () => {
 test('无关路由不会被追加模型', () => {
   const raw = {
     providers: {
-      'sicau-pmt': { baseURL: 'https://api.hhy.homes/v1', models: [{ id: 'GLM-5.3' }] },
+      'sicau-pmt': { baseURL: 'https://api.pmtlab.cn/v1', models: [{ id: 'GLM-5.3' }] },
       openai: { baseURL: 'https://api.openai.com/v1', models: [{ id: 'gpt-5' }] },
     },
   };
@@ -305,3 +315,49 @@ test('按 name 匹配也能对上，不会因为显示名与 id 不同就当成�
   assert.equal(models[0], raw.providers['sicau-pmt'].models[0]);
   assert.equal(models[0].maxTokens, 128000);
 });
+
+// ---------------- Hy4、目录别名去重与旧域名自动迁移 ----------------
+
+test('Hy4 与 Hy4-free 命中正确能力表，不退回兜底', () => {
+  for (const id of ['Hy4', 'Hy4-free', 'hy4free']) {
+    const next = withCapabilities(route([{ id }]), OPTIONS);
+    const model = next.providers['sicau-pmt'].models[0];
+    assert.deepEqual(model.reasoningEfforts, { high: 'high' });
+    assert.equal(model.contextWindow, 960000);
+    assert.equal(model.maxTokens, 64000);
+    assert.deepEqual(model.input, ['text', 'image']);
+  }
+});
+
+test('catalog 同时按 id 和 name 建索引时不会产出重复模型', () => {
+  const entry = { id: 'mimo-v2.6-pro', name: 'Xiaomi MiMo-V2.6-Pro', context: 1000000, max_output: 128000 };
+  const catalog = new Map([
+    ['mimov26pro', entry],
+    ['xiaomimimov26pro', entry],
+  ]);
+  const next = withDiscoveredModels(route([]), OPTIONS, catalog);
+  assert.deepEqual(
+    next.providers['sicau-pmt'].models.map((m) => m.id),
+    ['mimo-v2.6-pro'],
+  );
+});
+
+test('老配置里的旧域名自动迁移至 api.pmtlab.cn，无关路由与已是新域名的配置不变', () => {
+  assert.equal(migrateBaseURL('https://api.hhy.homes/v1/'), 'https://api.pmtlab.cn/v1');
+  assert.equal(migrateBaseURL('https://api.openai.com/v1/'), 'https://api.openai.com/v1');
+
+  const legacy = {
+    providers: {
+      'my-relay': { displayName: 'api.hhy.homes', baseURL: 'https://api.hhy.homes/v1/', models: [] },
+      openai: { displayName: 'OpenAI', baseURL: 'https://api.openai.com/v1', models: [] },
+    },
+  };
+  const migrated = withMigratedBaseURL(legacy, OPTIONS);
+  assert.equal(migrated.providers['my-relay'].baseURL, 'https://api.pmtlab.cn/v1');
+  assert.equal(migrated.providers['my-relay'].displayName, 'api.pmtlab.cn');
+  assert.equal(migrated.providers.openai, legacy.providers.openai);
+
+  // 已是新域名时返回原引用，不触发写盘
+  assert.equal(withMigratedBaseURL(migrated, OPTIONS), migrated);
+});
+
