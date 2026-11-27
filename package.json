@@ -4,7 +4,7 @@
   "description": "DSH bundle: syncs the sicau-pmt (oh-pmt-api) model catalog into a @deepseek-ai/dsh-llm-pi-ai route, with thinking-effort levels",
   "type": "module",
   "scripts": {
-    "test": "node --test test/"
+    "test": "node --test test/*.test.js"
   },
   "main": "lib/index.js",
   "exports": {
@@ -21,7 +21,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/SICAU-PMT/dsh-sicau-pmt.git"
+    "url": "git+https://github.com/SICAU-PMT/dsh-sicau-pmt.git"
   },
   "homepage": "https://github.com/SICAU-PMT/dsh-sicau-pmt#readme",
   "bugs": {
